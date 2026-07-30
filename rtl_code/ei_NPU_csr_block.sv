@@ -11,8 +11,6 @@ module npu_csr_block (
     input  logic [31:0] bus_addr,      // Địa chỉ ghi
     input  logic [31:0] bus_write_data,// Dữ liệu cấu hình từ phần mềm
     
-    // (Tùy chọn) Có thể thêm bus_read để phần mềm đọc trạng thái
-
     // ==========================================
     // Tín hiệu xuất ra cho Controller và PE Array
     // ==========================================
@@ -20,6 +18,7 @@ module npu_csr_block (
     output logic [1:0]  pool_mode,
     output logic [1:0]  act_mode,
     output logic        is_pooling_op, // 1: Chạy Max/Avg Pool, 0: Chạy Conv
+    output logic        is_residual_op,// [CẬP NHẬT] 1: Chạy Residual, 0: Bình thường
     output logic [15:0] reg_max_x,
     output logic [15:0] reg_max_y,
     output logic [15:0] reg_max_c,
@@ -40,7 +39,7 @@ module npu_csr_block (
         if (sys_rst) begin
             cmd_reg   <= 32'd0;
             cfg_reg   <= 32'd0;
-            dim_reg_1 <= 32'd0; // Bạn có thể gán giá trị mặc định (VD: 32x32)
+            dim_reg_1 <= 32'd0; 
             dim_reg_2 <= 32'd0;
         end else begin
             // Xóa xung start (chỉ giữ 1 chu kỳ để kích hoạt FSM)
@@ -59,22 +58,25 @@ module npu_csr_block (
     end
 
     // 2. Trích xuất (Slice) các bit cấu hình đưa ra ngoài hệ thống
-    assign npu_start     = cmd_reg[0];
+    assign npu_start      = cmd_reg[0];
     
     // Trích xuất cấu hình (CFG_REG)
-    assign pool_mode     = cfg_reg[1:0]; // 2 bit đầu
-    assign act_mode      = cfg_reg[3:2]; // 2 bit tiếp theo
-    assign is_pooling_op = cfg_reg[4];   // 1 bit
+    assign pool_mode      = cfg_reg[1:0]; // 2 bit đầu [1:0]
+    assign act_mode       = cfg_reg[3:2]; // 2 bit tiếp theo [3:2]
+    assign is_pooling_op  = cfg_reg[4];   // bit số 4
+    assign is_residual_op = cfg_reg[5];   // [CẬP NHẬT] Sử dụng bit số 5
     
     // Trích xuất kích thước (DIM_REG_1 & DIM_REG_2)
-    assign reg_max_x     = dim_reg_1[15:0];
-    assign reg_max_y     = dim_reg_1[31:16];
-    assign reg_max_c     = dim_reg_2[15:0];
-    assign reg_max_k     = dim_reg_2[31:16];
+    assign reg_max_x      = dim_reg_1[15:0];
+    assign reg_max_y      = dim_reg_1[31:16];
+    assign reg_max_c      = dim_reg_2[15:0];
+    assign reg_max_k      = dim_reg_2[31:16];
 
+    // [CẬP NHẬT] In thêm trạng thái của chế độ Residual để dễ debug
     always @(posedge sys_clk) begin
         if(npu_start)
-            $display("[CSR block] reg_max_x: %0d, reg_max_y: %0d, reg_max_c: %0d, reg_max_k: %0d", reg_max_x, reg_max_y, reg_max_c, reg_max_k);
+            $display("[CSR block] reg_max_x: %0d, reg_max_y: %0d, reg_max_c: %0d, reg_max_k: %0d | Pool: %b, Res: %b", 
+                     reg_max_x, reg_max_y, reg_max_c, reg_max_k, is_pooling_op, is_residual_op);
     end
 
 endmodule
