@@ -19,7 +19,7 @@ module ei_pe_array #(
     // Broadcast Control (Sent to ALL PEs)
     // ==========================================
     input  logic [NUM_PE-1:0]       valid_in,
-    //input  logic [NUM_PE-1:0]       residual_en,
+    input  logic [NUM_PE-1:0]       residual_en,
     input  logic [1:0]              pool_mode [0:NUM_PE-1],
     input  logic [15:0]             const_pool [0:NUM_PE-1],
     input  logic [1:0]              act_mode [0:NUM_PE-1],
@@ -50,11 +50,11 @@ module ei_pe_array #(
     output logic [15:0]         sum_out                       [0:NUM_PE-1],
     output logic [NUM_PE-1:0]   valid_out,
     output logic [NUM_PE-1:0]   final_input_channel_valid_out,
-    output logic [15:0]         pe_sum_out                    [0:NUM_PE-1]
+    output logic [15:0]         pe_sum_out                    [0:NUM_PE-1],
 
     // Vectorized Residual Outputs: residual_out[16 PEs][9 outputs each]
-    //output logic [15:0]         residual_out                  [0:NUM_PE-1][0:8],
-    //output logic [NUM_PE-1:0]   residual_valid_out
+    output logic [15:0]         residual_out                  [0:NUM_PE-1][0:8],
+    output logic [NUM_PE-1:0]   residual_valid_out
 );
 
     // ---------------------------------------------------------
@@ -88,7 +88,7 @@ module ei_pe_array #(
                 // Control
                 .valid_in      (valid_in[i]),
                 .ready_in      (ready_in_per_pe[i]),
-                //.residual_en   (residual_en[i]),
+                .residual_en   (residual_en[i]),
                 .pool_mode     (pool_mode[i]),
                 .const_pool    (const_pool[i]),
                 .act_mode      (act_mode[i]),
@@ -109,15 +109,15 @@ module ei_pe_array #(
                 .sum_out                       (sum_out[i]),
                 .valid_out                     (valid_out[i]),
                 .final_input_channel_valid_out (final_input_channel_valid_out[i]),
-                .pe_sum_out                    (pe_sum_out[i])
+                .pe_sum_out                    (pe_sum_out[i]),
                 
                 // Residual Outputs mapped to 2D Array
-//                .residual_out0 (residual_out[i][0]), .residual_out1 (residual_out[i][1]), .residual_out2 (residual_out[i][2]),
-//                .residual_out3 (residual_out[i][3]), .residual_out4 (residual_out[i][4]), .residual_out5 (residual_out[i][5]),
-//                .residual_out6 (residual_out[i][6]), .residual_out7 (residual_out[i][7]), .residual_out8 (residual_out[i][8]),
+               .residual_out0 (residual_out[i][0]), .residual_out1 (residual_out[i][1]), .residual_out2 (residual_out[i][2]),
+               .residual_out3 (residual_out[i][3]), .residual_out4 (residual_out[i][4]), .residual_out5 (residual_out[i][5]),
+               .residual_out6 (residual_out[i][6]), .residual_out7 (residual_out[i][7]), .residual_out8 (residual_out[i][8]),
                 
-//                .residual_valid_out            (residual_valid_out[i]),
-//                .test_signal                   () // Leave unconnected if not tracking individually
+               .residual_valid_out            (residual_valid_out[i]),
+               .test_signal                   () // Leave unconnected if not tracking individually
             );
 
         end
