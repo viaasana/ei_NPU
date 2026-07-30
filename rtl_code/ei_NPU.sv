@@ -19,7 +19,7 @@ module ei_NPU#(
     // ==========================================
     output logic        fm_mem_read_en,
     output logic [31:0] fm_mem_addr,
-    input  logic [255:0] fm_mem_read_data, // [CẬP NHẬT]: �?�?c 1 lần 16 phần tử 16-bit = 256 bits
+    input  logic [255:0] fm_mem_read_data, // Đọc 1 lần 16 phần tử 16-bit = 256 bits
 
     // ==========================================
     // 3. Memory Interface: Weights & Bias (Read)
@@ -37,12 +37,13 @@ module ei_NPU#(
 );
 
     // =========================================================================
-    // KHAI B�?O DÂY KẾT N�?I NỘI BỘ (INTERNAL WIRES)
+    // KHAI BÁO DÂY KẾT NỐI NỘI BỘ (INTERNAL WIRES)
     // =========================================================================
     
     // Dây tín hiệu từ CSR Block
     logic npu_start_wire;
     logic is_pooling_op_wire;
+    logic is_residual_op_wire; // [CẬP NHẬT] Tín hiệu Residual từ CSR
     logic [1:0]  csr_pool_mode_wire;
     logic [1:0]  csr_act_mode_wire;
     logic [15:0] reg_max_x_wire, reg_max_y_wire, reg_max_c_wire, reg_max_k_wire;
@@ -74,6 +75,10 @@ module ei_NPU#(
     // Dây chứa Window Data (3x3) từ Controller mới xuất ra
     logic [15:0] pe_fm_data_wire [0:NUM_PE-1][0:2][0:2];
 
+    // [CẬP NHẬT] Dây kết nối Residual Data từ PE Array
+    logic [15:0]       pe_res_out_array [0:NUM_PE-1][0:8];
+    logic [NUM_PE-1:0] pe_res_valid_array;
+
     // Dây phụ trợ cắt bus dữ liệu Weight
     logic [15:0] parsed_weight [0:8];
     
@@ -85,7 +90,7 @@ module ei_NPU#(
     endgenerate
 
     // =========================================================================
-    // KHỞI TẠO C�?C MODULE CON (INSTANTIATIONS)
+    // KHỞI TẠO CÁC MODULE CON (INSTANTIATIONS)
     // =========================================================================
 
     // ---------------------------------------------------------
@@ -103,6 +108,7 @@ module ei_NPU#(
         .pool_mode     (csr_pool_mode_wire),
         .act_mode      (csr_act_mode_wire),
         .is_pooling_op (is_pooling_op_wire),
+        .is_residual_op(is_residual_op_wire), // [CẬP NHẬT] Đấu dây
         
         .reg_max_x     (reg_max_x_wire),
         .reg_max_y     (reg_max_y_wire),
@@ -135,12 +141,12 @@ module ei_NPU#(
         .ready_all           (ready_all_wire[0]), 
         .fm_mem_read_en      (fm_mem_read_en),
         .fm_mem_addr         (fm_mem_addr),
-        .fm_bram_read_data   (fm_mem_read_data), // Nạp nguyên block 256-bit vào Controller
+        .fm_bram_read_data   (fm_mem_read_data),
         
         .w_mem_read_en       (w_mem_read_en),
         .w_mem_addr          (w_mem_addr),
         
-        // �?i�?u khiển luồng nội bộ
+        // Điều khiển luồng nội bộ
         .valid_in            (valid_in_wire),
         .acc_clear           (acc_clear_wire),
         .final_input_channel (final_ic_wire),
@@ -155,7 +161,7 @@ module ei_NPU#(
     );
 
     // ---------------------------------------------------------
-    // 2. Data Muxing & Broadcast Logic (Thay thế cho ei_pe_get_data cũ)
+    // 2. Data Muxing & Broadcast Logic
     // ---------------------------------------------------------
     always_comb begin
         for (int p = 0; p < NUM_PE; p++) begin
@@ -184,6 +190,7 @@ module ei_NPU#(
         .en                  (1'b1), 
         
         .valid_in            (valid_in_wire),
+        .residual_en         ({NUM_PE{is_residual_op_wire}}), // [CẬP NHẬT] Kích hoạt residual
         .pool_mode           (pool_mode_wire),
         .const_pool          (const_pool_wire),
         .act_mode            (act_mode_wire),
@@ -200,42 +207,97 @@ module ei_NPU#(
         .ready_in_per_pe     (), 
         .ready_all           (ready_all_wire[0]),
         .final_input_channel_valid_out (conv_valid_out_wire),
-        .pe_sum_out          (pe_pool_out)
-    );
-    
-    genvar pe_i;
-    generate
-        for(pe_i = 0; pe_i < NUM_PE; pe_i = pe_i + 1) begin : GEN_OUTPUT_MUX
-            ei_muxN #(
-                .WIDTH(16)
-            ) u_select_out (
-                .d0(pe_conv_out[pe_i]),
-                .d1(pe_pool_out[pe_i]),
-                .s (csr_pool_mode_wire[1]),
-                .y (pe_sum_wire[pe_i])
-            );
-        end
+        .pe_sum_out          (pe_pool_out),
 
-        for(pe_i = 0; pe_i < NUM_PE; pe_i = pe_i + 1) begin : GEN_VALID_OUT_MUX
-            ei_muxN #(
-                .WIDTH(1)
-            ) u_select_valid (
-                .d0(conv_valid_out_wire[pe_i]),
-                .d1(pool_valid_out_wire[pe_i]),
-                .s (csr_pool_mode_wire[1]),
-                .y (pe_valid_out_wire[pe_i])
-            );
-        end
-    endgenerate
+        // [CẬP NHẬT] Maps ngõ ra Residual
+        .residual_out        (pe_res_out_array),
+        .residual_valid_out  (pe_res_valid_array)
+    );
 
     // ---------------------------------------------------------
-    // 4. Write-Back Controller (Bộ Ghi Dữ Liệu)
+    // [CẬP NHẬT] 4. RESIDUAL SERIALIZER (Parallel 9x16 -> Serial 1x16)
+    // ---------------------------------------------------------
+    logic [15:0] res_shift_reg [0:NUM_PE-1][0:8];
+    logic [3:0]  res_shift_cnt;
+    logic        res_busy;
+    
+    logic [15:0] serialized_res_out [0:NUM_PE-1];
+    logic        serialized_res_valid;
+
+    always_ff @(posedge sys_clk) begin
+        if (rst) begin
+            res_shift_cnt <= '0;
+            res_busy      <= 1'b0;
+            serialized_res_valid <= 1'b0;
+        end else begin
+            // Khi PE tính xong Residual, chốt (latch) toàn bộ 9 data của 16 PEs
+            if (pe_res_valid_array[0]) begin 
+                for (int p = 0; p < NUM_PE; p++) begin
+                    for (int k = 0; k < 9; k++) begin
+                        res_shift_reg[p][k] <= pe_res_out_array[p][k];
+                    end
+                end
+                res_shift_cnt <= 4'd8; // Còn 8 lần dịch
+                res_busy      <= 1'b1;
+                serialized_res_valid <= 1'b1;
+            end 
+            // Quá trình dịch data ra ngoài dần dần
+            else if (res_busy) begin
+                for (int p = 0; p < NUM_PE; p++) begin
+                    for (int k = 0; k < 8; k++) begin
+                        res_shift_reg[p][k] <= res_shift_reg[p][k+1]; // Dịch trái
+                    end
+                end
+                
+                if (res_shift_cnt == 4'd0) begin
+                    res_busy <= 1'b0;
+                    serialized_res_valid <= 1'b0;
+                end else begin
+                    res_shift_cnt <= res_shift_cnt - 1'b1;
+                end
+            end
+        end
+    end
+
+    always_comb begin
+        for (int p = 0; p < NUM_PE; p++) begin
+            serialized_res_out[p] = res_shift_reg[p][0];
+        end
+    end
+
+    // ---------------------------------------------------------
+    // [CẬP NHẬT] 5. FINAL OUTPUT MUX (Chọn Data gửi xuống Write-back)
+    // Thay thế hoàn toàn cho GEN_OUTPUT_MUX và GEN_VALID_OUT_MUX cũ
+    // ---------------------------------------------------------
+    always_comb begin
+        for(int p = 0; p < NUM_PE; p++) begin
+            if (is_residual_op_wire) begin
+                // Mode Residual
+                pe_sum_wire[p]       = serialized_res_out[p];
+                pe_valid_out_wire[p] = serialized_res_valid;
+            end 
+            else if (csr_pool_mode_wire[1]) begin
+                // Mode Pooling
+                pe_sum_wire[p]       = pe_pool_out[p];
+                pe_valid_out_wire[p] = pool_valid_out_wire[p];
+            end 
+            else begin
+                // Default: Mode Convolution
+                pe_sum_wire[p]       = pe_conv_out[p];
+                pe_valid_out_wire[p] = conv_valid_out_wire[p];
+            end
+        end
+    end
+
+    // ---------------------------------------------------------
+    // 6. Write-Back Controller (Bộ Ghi Dữ Liệu)
     // ---------------------------------------------------------
     ei_pe_write_back_controller #(
         .NUM_PE(NUM_PE)
     ) u_write_back (
         .sys_clk             (sys_clk),
         .rst                 (rst),
+        .start               (npu_start_wire), // [QUAN TRỌNG]: Đã bổ sung dây start từ CSR
         
         // Kích thước động từ CSR
         .reg_max_x           (reg_max_x_wire),
@@ -255,9 +317,4 @@ module ei_NPU#(
         done = writeback_done;
     end
 
-    // always @(posedge sys_clk) begin
-    //     if(conv_valid_out_wire[0])
-    //         $display("[ei_NPU] [valid out] pool modeL: %0h sum_out: %0h", csr_pool_mode_wire[0], pe_sum_wire[0]);
-    // end
-    
 endmodule
